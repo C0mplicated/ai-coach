@@ -8,7 +8,6 @@ import {
   getPoseConfidence,
   metricDefinitions,
   MetricKey,
-  sampleVideoUrl,
   supportedVideoTypes,
 } from './lib/poseUtils';
 import heroImage from './assets/motion-coach-hero.png';
@@ -35,6 +34,124 @@ const getVideoSourceLabel = (url: string) => {
 };
 
 const buildChartData = (history: number[]) => history.map((value, index) => ({ index, value }));
+
+const createDemoClip = async () => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext('2d');
+  const stream = canvas.captureStream(30);
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? 'video/webm;codecs=vp9'
+    : 'video/webm';
+  const recorder = new MediaRecorder(stream, { mimeType });
+  const chunks: BlobPart[] = [];
+
+  const drawPlayer = (frame: number) => {
+    if (!ctx) return;
+    const t = frame / 90;
+    const pulse = Math.sin(t * Math.PI * 2);
+    const reach = Math.sin(t * Math.PI);
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#f7f8fb');
+    gradient.addColorStop(1, '#e8edf4');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.strokeStyle = '#d8dee8';
+    ctx.lineWidth = 2;
+    for (let x = 80; x < canvas.width; x += 120) {
+      ctx.beginPath();
+      ctx.moveTo(x, 555);
+      ctx.lineTo(x + 70, 690);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = 'rgba(0, 113, 227, 0.08)';
+    ctx.beginPath();
+    ctx.ellipse(640, 620, 260, 34, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const hip = { x: 620 + pulse * 16, y: 405 };
+    const head = { x: hip.x + 8, y: 218 - reach * 12 };
+    const shoulder = { x: hip.x + 20, y: 300 - reach * 8 };
+    const leftKnee = { x: hip.x - 142 - reach * 40, y: 505 };
+    const leftFoot = { x: hip.x - 255 - reach * 52, y: 595 };
+    const rightKnee = { x: hip.x + 122, y: 505 + pulse * 8 };
+    const rightFoot = { x: hip.x + 210, y: 590 };
+    const elbow = { x: shoulder.x + 130 + reach * 78, y: 255 - reach * 55 };
+    const hand = { x: elbow.x + 112 + reach * 40, y: 218 - reach * 70 };
+    const backElbow = { x: shoulder.x - 95, y: 335 + pulse * 10 };
+    const backHand = { x: backElbow.x - 62, y: 380 + pulse * 14 };
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#1d1d1f';
+    ctx.lineWidth = 38;
+    const limb = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    };
+
+    limb(shoulder, hip);
+    limb(hip, leftKnee);
+    limb(leftKnee, leftFoot);
+    limb(hip, rightKnee);
+    limb(rightKnee, rightFoot);
+    limb(shoulder, elbow);
+    limb(elbow, hand);
+    limb(shoulder, backElbow);
+    limb(backElbow, backHand);
+
+    ctx.fillStyle = '#1d1d1f';
+    ctx.beginPath();
+    ctx.arc(head.x, head.y, 36, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#0071e3';
+    ctx.lineWidth = 5;
+    limb(hand, { x: hand.x + 105, y: hand.y - 40 });
+    ctx.strokeStyle = '#0071e3';
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.ellipse(hand.x + 143, hand.y - 55, 42, 23, -0.45, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(0, 113, 227, 0.9)';
+    [head, shoulder, hip, leftKnee, leftFoot, rightKnee, rightFoot, elbow, hand].forEach((point) => {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  };
+
+  return new Promise<string>((resolve, reject) => {
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    recorder.onerror = () => reject(new Error('Demo clip recording failed.'));
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop());
+      resolve(URL.createObjectURL(new Blob(chunks, { type: mimeType })));
+    };
+
+    recorder.start();
+    let frame = 0;
+    const render = () => {
+      drawPlayer(frame);
+      frame += 1;
+      if (frame <= 120) {
+        window.requestAnimationFrame(render);
+      } else {
+        recorder.stop();
+      }
+    };
+    render();
+  });
+};
 
 const drawSkeleton = (
   ctx: CanvasRenderingContext2D,
@@ -313,8 +430,17 @@ export default function App() {
     prepareNewVideo(trimmed, 'Remote video loaded. Preparing AI motion analysis...');
   };
 
-  const handleExample = () => {
-    prepareNewVideo(sampleVideoUrl, 'Demo video loaded. Preparing AI motion analysis...');
+  const handleExample = async () => {
+    try {
+      setStatus('Creating a local demo clip...');
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      const demoUrl = await createDemoClip();
+      objectUrlRef.current = demoUrl;
+      prepareNewVideo(demoUrl, 'Demo video loaded. Preparing AI motion analysis...');
+    } catch (error) {
+      console.error(error);
+      setStatus('Demo video could not be created in this browser. Try uploading a clip instead.');
+    }
   };
 
   const handleTimeUpdate = () => {
@@ -578,6 +704,8 @@ export default function App() {
                         crossOrigin="anonymous"
                         onTimeUpdate={handleTimeUpdate}
                         onLoadedMetadata={handleDuration}
+                        onCanPlay={() => setStatus(detectorRef.current ? 'Ready. Press play to analyze motion.' : 'Video ready. Preparing AI model...')}
+                        onError={() => setStatus('Video failed to load. Try uploading a local MP4, MOV, or WebM file.')}
                         className="aspect-video w-full bg-black object-contain"
                       />
                       <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
