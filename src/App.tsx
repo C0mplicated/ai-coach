@@ -75,6 +75,7 @@ export default function App() {
   const adjacentPairsRef = useRef<Array<[number, number]>>([]);
   const intervalRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const modelLoadPromiseRef = useRef<Promise<void> | null>(null);
 
   const videoUrl = useAnalysisStore((state: AnalysisState) => state.videoUrl);
   const metrics = useAnalysisStore((state: AnalysisState) => state.metrics);
@@ -94,7 +95,7 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [dragActive, setDragActive] = useState(false);
-  const [modelLoading, setModelLoading] = useState(false);
+  const [modelState, setModelState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
 
   const currentFeedback = useMemo(
     () => getCoachingFeedback({ metrics, poseConfidence }),
@@ -171,18 +172,24 @@ export default function App() {
   }, [videoUrl, metrics, poseConfidence]);
 
   useEffect(() => {
-    if (!videoUrl || detectorRef.current || modelLoading) return;
+    if (!videoUrl) return;
 
-    let active = true;
-    const loadModel = async () => {
+    if (detectorRef.current) {
+      setModelState('ready');
+      setStatus('Ready. Press play to analyze motion.');
+      return;
+    }
+
+    if (modelLoadPromiseRef.current) return;
+
+    setModelState('loading');
+    setStatus('Preparing the pose model...');
+
+    modelLoadPromiseRef.current = (async () => {
       try {
-        setModelLoading(true);
-        setStatus('Preparing the pose model...');
-        const [tf, poseDetection] = await Promise.all([
-          import('@tensorflow/tfjs-core'),
-          import('@tensorflow-models/pose-detection'),
-          import('@tensorflow/tfjs-backend-webgl'),
-        ]).then(([tfModule, poseModule]) => [tfModule, poseModule] as const);
+        const tf = await import('@tensorflow/tfjs-core');
+        await import('@tensorflow/tfjs-backend-webgl');
+        const poseDetection = await import('@tensorflow-models/pose-detection');
 
         await tf.setBackend('webgl');
         await tf.ready();
@@ -192,36 +199,28 @@ export default function App() {
           { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
         );
 
-        if (!active) {
-          detector.dispose();
-          return;
-        }
-
         poseModuleRef.current = poseDetection;
         detectorRef.current = detector;
         adjacentPairsRef.current = poseDetection.util.getAdjacentPairs(
           poseDetection.SupportedModels.MoveNet
         ) as Array<[number, number]>;
+        setModelState('ready');
         setStatus('Ready. Press play to analyze motion.');
       } catch (error) {
         console.error(error);
+        setModelState('error');
         setStatus('Model load failed. Check the console for details.');
       } finally {
-        if (active) setModelLoading(false);
+        modelLoadPromiseRef.current = null;
       }
-    };
-
-    loadModel();
-
-    return () => {
-      active = false;
-    };
-  }, [modelLoading, setStatus, videoUrl]);
+    })();
+  }, [setStatus, videoUrl]);
 
   useEffect(() => {
     return () => {
       if (intervalRef.current !== null) window.clearInterval(intervalRef.current);
       detectorRef.current?.dispose();
+      detectorRef.current = null;
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     };
   }, []);
@@ -273,7 +272,7 @@ export default function App() {
     return () => {
       if (intervalRef.current !== null) window.clearInterval(intervalRef.current);
     };
-  }, [videoUrl, pushAngle, setFeedback, setPoseConfidence, modelLoading]);
+  }, [videoUrl, pushAngle, setFeedback, setPoseConfidence, modelState]);
 
   const prepareNewVideo = (url: string, statusText: string) => {
     setVideoUrl(url);
@@ -281,7 +280,7 @@ export default function App() {
     setAnalyzing(true);
     setCurrentTime(0);
     setDuration(0);
-    setStatus(statusText);
+    setStatus(detectorRef.current ? 'Ready. Press play to analyze motion.' : statusText);
     window.setTimeout(() => {
       document.getElementById('analyzer')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 80);
@@ -552,10 +551,20 @@ export default function App() {
                   )}
                   {videoUrl && (
                     <>
-                      {(modelLoading || !detectorRef.current) && (
+                      {modelState === 'loading' && (
                         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 backdrop-blur-sm">
                           <div className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-[#1d1d1f]">
                             Preparing AI model
+                          </div>
+                        </div>
+                      )}
+                      {modelState === 'error' && (
+                        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/65 px-6 text-center backdrop-blur-sm">
+                          <div className="max-w-sm rounded-[24px] bg-white p-5 text-[#1d1d1f]">
+                            <p className="text-base font-semibold">AI model could not load</p>
+                            <p className="mt-2 text-sm leading-6 text-[#6e6e73]">
+                              Refresh the page and try again. If it keeps happening, check browser WebGL support.
+                            </p>
                           </div>
                         </div>
                       )}
@@ -563,6 +572,7 @@ export default function App() {
                         ref={videoRef}
                         src={videoUrl}
                         controls
+                        autoPlay
                         muted
                         playsInline
                         crossOrigin="anonymous"
